@@ -1,0 +1,98 @@
+name: journey-safety
+
+x-database: &database
+  image: timescale/timescaledb-ha:pg17@sha256:3f0b3f6bdf4912878444a36e6113a18346309583c4d1a61d81a0c511342a1afd
+  command:
+    - postgres
+    - -c
+    - shared_preload_libraries=timescaledb
+    - -c
+    - shared_buffers=128MB
+    - -c
+    - max_connections=40
+    - -c
+    - log_statement=none
+    - -c
+    - log_min_error_statement=panic
+    - -c
+    - log_parameter_max_length_on_error=0
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+    interval: 3s
+    timeout: 3s
+    retries: 30
+  shm_size: 128mb
+
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-development}
+  HTTP_ADDR: 0.0.0.0:8080
+  DATABASE_URL: ${API_DATABASE_URL:-postgres://${POSTGRES_USER:-journey}:${POSTGRES_PASSWORD:?Run ./dev env first}@db:5432/${POSTGRES_DB:-journey}?sslmode=disable}
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  SESSION_TTL: ${SESSION_TTL:-168h}
+  INVITATION_TTL: ${INVITATION_TTL:-72h}
+  AUTH_RATE_PER_MINUTE: ${AUTH_RATE_PER_MINUTE:-10}
+  DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
+
+services:
+  db:
+    <<: *database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-journey}
+      POSTGRES_USER: ${POSTGRES_USER:-journey}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run make env first}
+    ports: ["127.0.0.1:${DB_PORT:-55432}:5432"]
+    volumes: ["database:/home/postgres/pgdata"]
+    restart: unless-stopped
+
+  migrate:
+    build: {context: .., dockerfile: infrastructure/Dockerfile}
+    image: journey-safety-backend:phase1
+    environment:
+      <<: *app-env
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgres://${POSTGRES_USER:-journey}:${POSTGRES_PASSWORD:?Run ./dev env first}@db:5432/${POSTGRES_DB:-journey}?sslmode=disable}
+    command: ["/app/migrate", "up"]
+    depends_on:
+      db: {condition: service_healthy}
+    restart: "no"
+
+  api:
+    image: journey-safety-backend:phase1
+    build: {context: .., dockerfile: infrastructure/Dockerfile}
+    environment: *app-env
+    ports: ["127.0.0.1:${API_PORT:-8080}:8080"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  db-test:
+    <<: *database
+    profiles: [test]
+    environment:
+      POSTGRES_DB: journey_test
+      POSTGRES_USER: ${POSTGRES_USER:-journey}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run make env first}
+    ports: ["127.0.0.1:${TEST_DB_PORT:-55433}:5432"]
+    tmpfs: ["/home/postgres/pgdata:uid=1000,gid=1000,mode=0700"]
+    restart: "no"
+
+  test:
+    profiles: [test]
+    build: {context: .., dockerfile: infrastructure/test.Dockerfile}
+    environment:
+      TEST_DATABASE_URL: postgres://${POSTGRES_USER:-journey}:${POSTGRES_PASSWORD:?Run make env first}@db-test:5432/journey_test?sslmode=disable
+    depends_on:
+      db-test: {condition: service_healthy}
+
+volumes:
+  database:

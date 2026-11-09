@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+backend/bin/
+coverage.out
+*.dump
+backups/
+node_modules/
+dist/
+.DS_Store

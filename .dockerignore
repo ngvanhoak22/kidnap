@@ -1,0 +1,8 @@
+.env
+.env.*
+.git
+backups
+**/node_modules
+**/bin
+**/coverage.out
+*.dump

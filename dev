@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+action="${1:-help}"
+if [ "$action" = env ]; then exec python3 infrastructure/scripts/create_env.py; fi
+if [ ! -f .env ]; then printf 'Run ./dev env first.\n' >&2; exit 1; fi
+set -a
+. ./.env
+set +a
+compose() { docker compose --env-file .env -f infrastructure/compose.yaml "$@"; }
+case "$action" in
+  db) compose up -d --wait db ;;
+  up) compose up -d --build --wait ;;
+  down) compose --profile test down ;;
+  migrate) cd backend; exec go run ./cmd/migrate up ;;
+  migration-status) cd backend; exec go run ./cmd/migrate status ;;
+  api) cd backend; exec go run ./cmd/api ;;
+  test) cd backend; exec go test ./... ;;
+  check) cd backend; go vet ./...; exec go test ./... ;;
+  integration)
+    compose --profile test up -d --wait db-test
+    export TEST_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${TEST_DB_PORT}/journey_test?sslmode=disable"
+    cd backend
+    exec go test -count=1 -v ./tests/integration
+    ;;
+  test-docker) compose --profile test build test; compose --profile test run --rm test ;;
+  backup) exec sh infrastructure/scripts/backup.sh ;;
+  restore-check) exec python3 infrastructure/scripts/verify_restore.py ;;
+  *) printf 'Usage: ./dev env|db|up|down|migrate|migration-status|api|test|check|integration|test-docker|backup|restore-check\n' ;;
+esac
